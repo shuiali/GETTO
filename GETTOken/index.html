@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TON Wallet Connect</title>
+  <title>TON Wallet Token Extractor</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     body {
@@ -40,128 +40,175 @@
     }
     .success { color: green; font-weight: bold; }
     .error { color: red; font-weight: bold; }
+    .warning { color: orange; font-weight: bold; }
+    .steps { background: #e3f2fd; padding: 15px; border-radius: 8px; margin: 20px 0; }
+    .steps ol { text-align: left; margin: 10px 0; }
+    input[type="text"] {
+      width: 90%;
+      padding: 10px;
+      margin: 10px 0;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+      font-size: 12px;
+    }
   </style>
 </head>
 <body>
-  <h2>TON Wallet Connect</h2>
-  <button id="connectWallet">Connect Telegram Wallet</button>
-  <button id="getToken" disabled>Get Write Token</button>
-  <pre id="log">Ready to connect...</pre>
+  <h2>🔑 TON Wallet Token Extractor</h2>
+  
+  <div class="steps">
+    <h3>📋 Instructions:</h3>
+    <ol>
+      <li>Open <a href="https://web.telegram.org/k/" target="_blank">web.telegram.org/k/</a> in Chrome</li>
+      <li>Log in and open <strong>@wallet</strong> bot</li>
+      <li>Press <strong>F12</strong> → Go to <strong>Network</strong> tab</li>
+      <li>Check <strong>Preserve log</strong></li>
+      <li>Click around in Wallet (Send, P2P, etc.)</li>
+      <li>Find request to <strong>walletbot.me</strong></li>
+      <li>Click request → <strong>Headers</strong> tab</li>
+      <li>Copy <strong>authorization: Bearer ...</strong> value</li>
+      <li>Paste below ⬇️</li>
+    </ol>
+  </div>
+
+  <input type="text" id="tokenInput" placeholder="Paste your JWT token here (should start with 'eyJhbGciOi...')">
+  <button id="validateBtn">Validate & Extract Token</button>
+  <button id="copyBtn" disabled style="display:none;">Copy Token</button>
+  
+  <pre id="log">Waiting for token input...</pre>
 
   <script>
     const log = document.getElementById('log');
-    const connectBtn = document.getElementById('connectWallet');
-    const getTokenBtn = document.getElementById('getToken');
+    const tokenInput = document.getElementById('tokenInput');
+    const validateBtn = document.getElementById('validateBtn');
+    const copyBtn = document.getElementById('copyBtn');
     const tg = window.Telegram.WebApp;
 
-    // Initialize Telegram WebApp
     tg.ready();
     tg.expand();
 
-    let walletData = null;
+    let validToken = null;
 
     function appendLog(message, type = 'info') {
       const timestamp = new Date().toLocaleTimeString();
-      const className = type === 'success' ? 'success' : type === 'error' ? 'error' : '';
+      const className = type === 'success' ? 'success' : type === 'error' ? 'error' : type === 'warning' ? 'warning' : '';
       log.innerHTML += `<div class="${className}">[${timestamp}] ${message}</div>`;
       log.scrollTop = log.scrollHeight;
     }
 
-    // Connect to Telegram Wallet
-    connectBtn.onclick = async () => {
-      try {
-        appendLog('Requesting wallet access...');
+    function clearLog() {
+      log.innerHTML = '';
+    }
 
-        // Request wallet access using Telegram WebApp API
-        tg.requestWriteAccess((granted) => {
-          if (granted) {
-            appendLog('✓ Write access granted!', 'success');
-            
-            // Get wallet info from Telegram
-            const user = tg.initDataUnsafe.user;
-            const initData = tg.initData;
-            
-            walletData = {
-              userId: user?.id,
-              username: user?.username,
-              firstName: user?.first_name,
-              initData: initData,
-              timestamp: Date.now()
-            };
-
-            appendLog(`✓ Connected as: ${user?.first_name}`, 'success');
-            appendLog(`User ID: ${user?.id}`);
-            
-            connectBtn.disabled = true;
-            getTokenBtn.disabled = false;
-          } else {
-            appendLog('Write access denied by user', 'error');
-            tg.showAlert('Please grant write access to continue');
-          }
-        });
-
-      } catch (e) {
-        appendLog(`Error: ${e.message}`, 'error');
-        tg.showAlert('Error: ' + e.message);
+    function base64UrlDecode(str) {
+      // Add padding and replace URL-safe chars
+      str = str.replace(/-/g, '+').replace(/_/g, '/');
+      while (str.length % 4) {
+        str += '=';
       }
-    };
-
-    // Get token with write permissions
-    getTokenBtn.onclick = async () => {
       try {
-        if (!walletData) {
-          appendLog('Error: No wallet connected!', 'error');
-          tg.showAlert('Please connect your wallet first!');
-          return;
+        return JSON.parse(atob(str));
+      } catch (e) {
+        throw new Error('Invalid base64 encoding');
+      }
+    }
+
+    validateBtn.onclick = () => {
+      clearLog();
+      let token = tokenInput.value.trim();
+
+      // Remove 'Bearer ' prefix if present
+      if (token.toLowerCase().startsWith('bearer ')) {
+        token = token.substring(7).trim();
+      }
+
+      appendLog('Validating token...');
+
+      // Check if it has 3 parts (JWT format)
+      const parts = token.split('.');
+      if (parts.length !== 3) {
+        appendLog(`❌ Invalid JWT format! Found ${parts.length} parts, expected 3`, 'error');
+        appendLog('JWT tokens have format: header.payload.signature', 'error');
+        
+        // Check if it's the wrong type of token
+        if (token.startsWith('eyJ')) {
+          try {
+            const decoded = JSON.parse(atob(token + '=='));
+            if (decoded.userId || decoded.initData) {
+              appendLog('⚠️ This looks like initData, not a JWT token!', 'warning');
+              appendLog('You need the authorization header from walletbot.me requests', 'warning');
+            }
+          } catch (e) {}
+        }
+        return;
+      }
+
+      try {
+        // Decode header
+        const header = base64UrlDecode(parts[0]);
+        appendLog(`✅ Valid JWT header detected!`, 'success');
+        appendLog(`   Algorithm: ${header.alg}`);
+        appendLog(`   Type: ${header.typ}`);
+
+        // Decode payload
+        const payload = base64UrlDecode(parts[1]);
+        appendLog(`✅ Token payload decoded!`, 'success');
+        appendLog(`   User ID: ${payload.user_id || 'N/A'}`);
+        appendLog(`   TG User ID: ${payload.tg_user_id || 'N/A'}`);
+        
+        if (payload.exp) {
+          const expDate = new Date(payload.exp * 1000);
+          appendLog(`   Expires: ${expDate.toLocaleString()}`);
         }
 
-        appendLog('Generating write token...');
-
-        // Create API-compatible token
-        const apiToken = btoa(JSON.stringify(walletData));
+        appendLog(`   Token length: ${token.length} characters`);
 
         appendLog('\n═══════════════════════════════', 'success');
-        appendLog('✓ WRITE TOKEN GENERATED!', 'success');
+        appendLog('✓ VALID TON WALLET JWT TOKEN!', 'success');
         appendLog('═══════════════════════════════\n', 'success');
-        appendLog(`User: ${walletData.firstName} (@${walletData.username || 'N/A'})`);
-        appendLog(`User ID: ${walletData.userId}`);
-        appendLog(`\nAPI Token (Base64):\n${apiToken}\n`);
-        appendLog('Raw Data:');
-        appendLog(JSON.stringify(walletData, null, 2));
 
-        // Copy to clipboard
-        try {
-          await navigator.clipboard.writeText(apiToken);
-          tg.showAlert('✓ Token copied to clipboard!');
-          appendLog('\n✓ Token copied to clipboard!', 'success');
-        } catch (e) {
-          // Fallback
-          const textarea = document.createElement('textarea');
-          textarea.value = apiToken;
-          document.body.appendChild(textarea);
-          textarea.select();
-          document.execCommand('copy');
-          document.body.removeChild(textarea);
-          tg.showAlert('✓ Token copied!');
-          appendLog('✓ Token copied!', 'success');
-        }
+        validToken = token;
+        copyBtn.disabled = false;
+        copyBtn.style.display = 'inline-block';
 
-        // Show usage example
-        appendLog('\n📝 Usage Example:');
-        appendLog('Authorization: Bearer ' + apiToken.substring(0, 50) + '...');
+        appendLog('📝 Full Token:');
+        appendLog(token);
+
+        appendLog('\n💡 Usage:');
+        appendLog('Authorization: Bearer ' + token.substring(0, 50) + '...');
 
       } catch (e) {
-        appendLog(`Error: ${e.message}`, 'error');
-        tg.showAlert('Error: ' + e.message);
+        appendLog(`❌ Error validating token: ${e.message}`, 'error');
+        appendLog('Make sure you copied the complete authorization header value', 'error');
       }
     };
 
-    // Check if already connected
+    copyBtn.onclick = async () => {
+      if (!validToken) return;
+
+      try {
+        await navigator.clipboard.writeText(validToken);
+        tg.showAlert('✅ Token copied to clipboard!');
+        appendLog('✅ Token copied to clipboard!', 'success');
+      } catch (e) {
+        // Fallback
+        const textarea = document.createElement('textarea');
+        textarea.value = validToken;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        tg.showAlert('✅ Token copied!');
+        appendLog('✅ Token copied!', 'success');
+      }
+    };
+
+    // Show initial instructions
     if (tg.initData) {
-      appendLog('Telegram WebApp initialized');
-      appendLog('Click "Connect Telegram Wallet" to grant write access');
+      appendLog('Telegram WebApp initialized', 'success');
+      appendLog('Follow the instructions above to extract your TON Wallet token', 'warning');
     } else {
-      appendLog('Warning: Please open through Telegram bot!', 'error');
+      appendLog('⚠️ Open through Telegram bot for best experience', 'warning');
     }
   </script>
 </body>

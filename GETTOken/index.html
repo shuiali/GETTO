@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TON Wallet Connect</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="https://unpkg.com/@tonconnect/sdk@latest/dist/tonconnect-sdk.min.js"></script>
   <style>
     body {
       font-family: Arial;
@@ -45,24 +44,21 @@
 </head>
 <body>
   <h2>TON Wallet API Token Extractor</h2>
-  <button id="connectWallet">Connect Wallet</button>
+  <button id="openWallet">Open Telegram Wallet</button>
   <button id="getToken" disabled>Extract Bearer Token</button>
-  <button id="interceptNetwork">Intercept Network</button>
   <pre id="log">Ready to connect...</pre>
 
   <script>
     const log = document.getElementById('log');
-    const connectBtn = document.getElementById('connectWallet');
+    const openWalletBtn = document.getElementById('openWallet');
     const getTokenBtn = document.getElementById('getToken');
-    const interceptBtn = document.getElementById('interceptNetwork');
     const tg = window.Telegram.WebApp;
 
     tg.ready();
     tg.expand();
 
-    let walletConnection = null;
-    let bearerToken = null;
-    let walletAddress = null;
+    let capturedTokens = [];
+    let allRequests = [];
 
     function appendLog(message, type = 'info') {
       const timestamp = new Date().toLocaleTimeString();
@@ -71,156 +67,162 @@
       log.scrollTop = log.scrollHeight;
     }
 
-    // Intercept fetch to capture Bearer token
+    // Intercept ALL network traffic
     const originalFetch = window.fetch;
     window.fetch = async function(...args) {
       const [url, options] = args;
       
-      // Log all requests
+      appendLog(`📡 Fetch: ${url}`);
+      
       if (options?.headers) {
         const headers = options.headers instanceof Headers ? 
           Object.fromEntries(options.headers.entries()) : options.headers;
         
+        // Log all headers
+        Object.keys(headers).forEach(key => {
+          appendLog(`  ${key}: ${headers[key].substring(0, 50)}...`);
+        });
+        
         if (headers['Authorization'] || headers['authorization']) {
           const authHeader = headers['Authorization'] || headers['authorization'];
           if (authHeader.startsWith('Bearer ')) {
-            bearerToken = authHeader.replace('Bearer ', '');
-            appendLog('🎯 BEARER TOKEN INTERCEPTED!', 'success');
-            appendLog(`Token: ${bearerToken.substring(0, 50)}...`);
+            const token = authHeader.replace('Bearer ', '');
+            capturedTokens.push(token);
+            appendLog('🎯 BEARER TOKEN CAPTURED!', 'success');
             getTokenBtn.disabled = false;
           }
         }
       }
       
+      allRequests.push({ url, options });
       return originalFetch.apply(this, args);
     };
 
-    // Intercept XMLHttpRequest too
-    const originalOpen = XMLHttpRequest.prototype.open;
-    const originalSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
+    // Intercept XMLHttpRequest
+    const originalXHROpen = XMLHttpRequest.prototype.open;
+    const originalXHRSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+    
+    XMLHttpRequest.prototype.open = function(method, url) {
+      this._url = url;
+      appendLog(`📡 XHR: ${method} ${url}`);
+      return originalXHROpen.apply(this, arguments);
+    };
     
     XMLHttpRequest.prototype.setRequestHeader = function(header, value) {
+      appendLog(`  ${header}: ${value.substring(0, 50)}...`);
+      
       if (header.toLowerCase() === 'authorization' && value.startsWith('Bearer ')) {
-        bearerToken = value.replace('Bearer ', '');
-        appendLog('🎯 BEARER TOKEN INTERCEPTED (XHR)!', 'success');
-        appendLog(`Token: ${bearerToken.substring(0, 50)}...`);
+        const token = value.replace('Bearer ', '');
+        capturedTokens.push(token);
+        appendLog('🎯 BEARER TOKEN CAPTURED (XHR)!', 'success');
         getTokenBtn.disabled = false;
       }
-      return originalSetRequestHeader.apply(this, arguments);
+      return originalXHRSetHeader.apply(this, arguments);
     };
 
-    interceptBtn.onclick = () => {
-      appendLog('✓ Network interception active', 'success');
-      appendLog('Waiting for API calls...');
-      interceptBtn.disabled = true;
-    };
+    appendLog('✓ Network interception active', 'success');
+    appendLog('All requests will be logged...\n');
 
-    // Connect wallet using Telegram Wallet
-    connectBtn.onclick = async () => {
+    // Open Telegram Wallet directly
+    openWalletBtn.onclick = async () => {
       try {
-        appendLog('Connecting to Telegram Wallet...');
+        appendLog('Opening Telegram Wallet...');
         
-        // Use Telegram's internal wallet connection
-        if (tg.openTelegramLink) {
-          // Try to trigger wallet connection
-          const walletUrl = 'ton://transfer/YOUR_ADDRESS';
-          tg.openLink(walletUrl);
-          appendLog('Wallet connection requested...');
-        }
-
-        // Alternative: Use TON Connect SDK
-        if (typeof TonConnectSDK !== 'undefined') {
-          const connector = new TonConnectSDK.TonConnect({
-            manifestUrl: 'https://yourdomain.com/tonconnect-manifest.json'
+        // Method 1: Use openInvoice to trigger wallet
+        if (tg.openInvoice) {
+          // This will open the payment/wallet interface
+          tg.showPopup({
+            title: 'Open Wallet',
+            message: 'This will open your Telegram Wallet. All network requests will be captured.',
+            buttons: [
+              {id: 'open', type: 'default', text: 'Open Wallet'},
+              {id: 'cancel', type: 'cancel'}
+            ]
+          }, (buttonId) => {
+            if (buttonId === 'open') {
+              // Try to open wallet via bot command
+              tg.sendData('open_wallet');
+              appendLog('Wallet open command sent');
+              appendLog('Please interact with your wallet...');
+            }
           });
-          
-          const walletsList = await connector.getWallets();
-          appendLog(`Found ${walletsList.length} wallets`);
-          
-          // Connect to Telegram Wallet
-          const telegramWallet = walletsList.find(w => w.name === 'Telegram Wallet');
-          if (telegramWallet) {
-            await connector.connect(telegramWallet);
-            appendLog('✓ Wallet connected!', 'success');
-            walletConnection = connector;
-            getTokenBtn.disabled = false;
-          }
         }
-
-        // Fallback: Request write access which triggers wallet APIs
-        tg.requestWriteAccess((granted) => {
-          if (granted) {
-            appendLog('✓ Write access granted!', 'success');
-            appendLog('Making authenticated request...');
-            
-            // Trigger an API call that uses Bearer token
-            makeAuthenticatedRequest();
+        
+        // Method 2: Request contact/location (triggers API calls)
+        appendLog('\nAlternative: Requesting user data...');
+        tg.requestContact((success, data) => {
+          if (success) {
+            appendLog('✓ Contact shared', 'success');
           }
         });
+        
+        // Method 3: Try to access Telegram Wallet via deep link
+        const walletBotLink = 'https://t.me/wallet';
+        appendLog(`\n📱 Opening: ${walletBotLink}`);
+        appendLog('After opening wallet, perform any action (send, receive, etc.)');
+        appendLog('Return here and check captured tokens\n');
+        
+        tg.openLink(walletBotLink);
 
       } catch (e) {
         appendLog(`Error: ${e.message}`, 'error');
-        tg.showAlert('Error: ' + e.message);
       }
     };
 
-    // Make a request that will use Bearer token
-    async function makeAuthenticatedRequest() {
-      try {
-        // Try to access wallet data which requires Bearer token
-        const response = await fetch('https://wallet.telegram.org/api/v1/user/info', {
-          headers: {
-            'Authorization': `Bearer ${tg.initData}` // This will be intercepted
-          }
-        });
-        
-        appendLog('API request sent, check for intercepted token...');
-      } catch (e) {
-        appendLog('Request made (may fail, but token intercepted)');
-      }
-    }
-
-    // Extract and display the Bearer token
+    // Extract and display captured tokens
     getTokenBtn.onclick = async () => {
       try {
-        if (!bearerToken) {
-          appendLog('⚠️ No Bearer token captured yet!', 'error');
-          appendLog('Try connecting wallet or making a transaction');
+        if (capturedTokens.length === 0) {
+          appendLog('⚠️ No Bearer tokens captured yet!', 'error');
+          appendLog('\nTips:', 'error');
+          appendLog('1. Open Telegram Wallet (@wallet)');
+          appendLog('2. Perform any action (check balance, send TON, etc.)');
+          appendLog('3. Return to this app');
+          appendLog('4. Click this button again');
           return;
         }
 
         appendLog('\n═══════════════════════════════', 'success');
-        appendLog('✓ WALLET API BEARER TOKEN EXTRACTED!', 'success');
+        appendLog(`✓ ${capturedTokens.length} BEARER TOKEN(S) CAPTURED!`, 'success');
         appendLog('═══════════════════════════════\n', 'success');
         
-        appendLog(`\nBearer Token:\n${bearerToken}\n`);
-        
-        // Try to decode if it's a JWT
-        try {
-          const parts = bearerToken.split('.');
-          if (parts.length === 3) {
-            const payload = JSON.parse(atob(parts[1]));
-            appendLog('Token Payload:');
-            appendLog(JSON.stringify(payload, null, 2));
+        capturedTokens.forEach((token, index) => {
+          appendLog(`\nToken #${index + 1}:`);
+          appendLog(token);
+          
+          // Try to decode if JWT
+          try {
+            const parts = token.split('.');
+            if (parts.length === 3) {
+              const payload = JSON.parse(atob(parts[1]));
+              appendLog('\nJWT Payload:');
+              appendLog(JSON.stringify(payload, null, 2));
+            }
+          } catch (e) {
+            appendLog('(Non-JWT token)');
           }
-        } catch (e) {
-          appendLog('Token format: Non-JWT bearer token');
-        }
+        });
 
-        // Copy to clipboard
-        await navigator.clipboard.writeText(bearerToken);
-        tg.showAlert('✓ Bearer Token copied to clipboard!');
-        appendLog('\n✓ Token copied to clipboard!', 'success');
+        // Copy latest token
+        const latestToken = capturedTokens[capturedTokens.length - 1];
+        await navigator.clipboard.writeText(latestToken);
+        tg.showAlert(`✓ Latest token copied!\n\nTotal tokens captured: ${capturedTokens.length}`);
+        appendLog('\n✓ Latest token copied to clipboard!', 'success');
         
-        appendLog('\n📝 Usage:');
-        appendLog('Authorization: Bearer ' + bearerToken.substring(0, 30) + '...');
+        appendLog('\n📝 All captured requests:');
+        allRequests.forEach((req, i) => {
+          appendLog(`${i + 1}. ${req.url}`);
+        });
 
       } catch (e) {
         appendLog(`Error: ${e.message}`, 'error');
       }
     };
 
-    appendLog('Ready! Click "Intercept Network" then "Connect Wallet"');
+    appendLog('Instructions:');
+    appendLog('1. Click "Open Telegram Wallet"');
+    appendLog('2. Perform any wallet action');
+    appendLog('3. Return here and click "Extract Bearer Token"\n');
     
   </script>
 </body>

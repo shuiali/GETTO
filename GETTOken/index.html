@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TON Wallet Connect</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="https://unpkg.com/@tonconnect/ui@latest/dist/tonconnect-ui.min.js"></script>
   <style>
     body {
       font-family: Arial;
@@ -41,25 +40,25 @@
     }
     .success { color: green; font-weight: bold; }
     .error { color: red; font-weight: bold; }
-    #tonconnect-button { margin: 20px auto; }
   </style>
 </head>
 <body>
   <h2>TON Wallet Connect</h2>
-  <div id="tonconnect-button"></div>
+  <button id="connectWallet">Connect Telegram Wallet</button>
   <button id="getToken" disabled>Get Write Token</button>
-  <button id="disconnect" disabled>Disconnect</button>
-  <pre id="log">Initializing TON Connect...</pre>
+  <pre id="log">Ready to connect...</pre>
 
   <script>
     const log = document.getElementById('log');
+    const connectBtn = document.getElementById('connectWallet');
     const getTokenBtn = document.getElementById('getToken');
-    const disconnectBtn = document.getElementById('disconnect');
     const tg = window.Telegram.WebApp;
 
     // Initialize Telegram WebApp
     tg.ready();
     tg.expand();
+
+    let walletData = null;
 
     function appendLog(message, type = 'info') {
       const timestamp = new Date().toLocaleTimeString();
@@ -68,67 +67,67 @@
       log.scrollTop = log.scrollHeight;
     }
 
-    // Initialize TON Connect
-    const tonConnectUI = new TON_CONNECT_UI.TonConnectUI({
-      manifestUrl: 'https://lowercase-sable.vercel.app/tonconnect-manifest.json',
-      buttonRootId: 'tonconnect-button'
-    });
+    // Connect to Telegram Wallet
+    connectBtn.onclick = async () => {
+      try {
+        appendLog('Requesting wallet access...');
 
-    appendLog('TON Connect initialized');
+        // Request wallet access using Telegram WebApp API
+        tg.requestWriteAccess((granted) => {
+          if (granted) {
+            appendLog('✓ Write access granted!', 'success');
+            
+            // Get wallet info from Telegram
+            const user = tg.initDataUnsafe.user;
+            const initData = tg.initData;
+            
+            walletData = {
+              userId: user?.id,
+              username: user?.username,
+              firstName: user?.first_name,
+              initData: initData,
+              timestamp: Date.now()
+            };
 
-    // Monitor connection status
-    tonConnectUI.onStatusChange(wallet => {
-      if (wallet) {
-        appendLog('✓ Wallet connected successfully!', 'success');
-        appendLog(`Wallet Address: ${wallet.account.address}`);
-        appendLog(`Chain: ${wallet.account.chain}`);
-        appendLog(`Public Key: ${wallet.account.publicKey || 'N/A'}`);
-        
-        getTokenBtn.disabled = false;
-        disconnectBtn.disabled = false;
-      } else {
-        appendLog('Wallet disconnected', 'error');
-        getTokenBtn.disabled = true;
-        disconnectBtn.disabled = true;
+            appendLog(`✓ Connected as: ${user?.first_name}`, 'success');
+            appendLog(`User ID: ${user?.id}`);
+            
+            connectBtn.disabled = true;
+            getTokenBtn.disabled = false;
+          } else {
+            appendLog('Write access denied by user', 'error');
+            tg.showAlert('Please grant write access to continue');
+          }
+        });
+
+      } catch (e) {
+        appendLog(`Error: ${e.message}`, 'error');
+        tg.showAlert('Error: ' + e.message);
       }
-    });
+    };
 
     // Get token with write permissions
     getTokenBtn.onclick = async () => {
       try {
-        const wallet = tonConnectUI.wallet;
-        
-        if (!wallet) {
+        if (!walletData) {
           appendLog('Error: No wallet connected!', 'error');
           tg.showAlert('Please connect your wallet first!');
           return;
         }
 
-        appendLog('Extracting wallet data...');
+        appendLog('Generating write token...');
 
-        // Get connection proof (this provides write permissions)
-        const proof = tonConnectUI.connectionProof;
-        
-        // Prepare token data
-        const tokenData = {
-          address: wallet.account.address,
-          publicKey: wallet.account.publicKey,
-          chain: wallet.account.chain,
-          walletStateInit: wallet.account.walletStateInit,
-          proof: proof,
-          timestamp: Date.now()
-        };
-
-        // Convert to API-compatible format
-        const apiToken = btoa(JSON.stringify(tokenData));
+        // Create API-compatible token
+        const apiToken = btoa(JSON.stringify(walletData));
 
         appendLog('\n═══════════════════════════════', 'success');
         appendLog('✓ WRITE TOKEN GENERATED!', 'success');
         appendLog('═══════════════════════════════\n', 'success');
-        appendLog(`Wallet: ${wallet.account.address}`);
+        appendLog(`User: ${walletData.firstName} (@${walletData.username || 'N/A'})`);
+        appendLog(`User ID: ${walletData.userId}`);
         appendLog(`\nAPI Token (Base64):\n${apiToken}\n`);
         appendLog('Raw Data:');
-        appendLog(JSON.stringify(tokenData, null, 2));
+        appendLog(JSON.stringify(walletData, null, 2));
 
         // Copy to clipboard
         try {
@@ -157,27 +156,13 @@
       }
     };
 
-    // Disconnect wallet
-    disconnectBtn.onclick = async () => {
-      try {
-        await tonConnectUI.disconnect();
-        appendLog('Wallet disconnected successfully');
-        log.innerHTML = 'Connect your wallet to continue...';
-      } catch (e) {
-        appendLog(`Error disconnecting: ${e.message}`, 'error');
-      }
-    };
-
-    // Initial status check
-    setTimeout(() => {
-      if (tonConnectUI.wallet) {
-        appendLog('Wallet already connected!', 'success');
-        getTokenBtn.disabled = false;
-        disconnectBtn.disabled = false;
-      } else {
-        appendLog('Please connect your TON wallet to continue');
-      }
-    }, 1000);
+    // Check if already connected
+    if (tg.initData) {
+      appendLog('Telegram WebApp initialized');
+      appendLog('Click "Connect Telegram Wallet" to grant write access');
+    } else {
+      appendLog('Warning: Please open through Telegram bot!', 'error');
+    }
   </script>
 </body>
 </html>

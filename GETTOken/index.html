@@ -34,207 +34,180 @@
       background: var(--tg-theme-secondary-bg-color, #f0f0f0);
       border-radius: 8px;
       word-wrap: break-word;
-      font-size: 12px;
-      max-height: 400px;
+      font-size: 11px;
+      max-height: 500px;
       overflow-y: auto;
     }
     .success { color: green; font-weight: bold; }
     .error { color: red; font-weight: bold; }
+    .info { color: blue; }
   </style>
 </head>
 <body>
-  <h2>TON Wallet Token Extractor</h2>
-  <button id="triggerAPI">Trigger Wallet API Call</button>
-  <button id="getToken" disabled>Show Captured Token</button>
+  <h2>TON Wallet Bearer Token Extractor</h2>
+  <button id="getToken">Get Bearer Token</button>
+  <button id="copyToken" disabled>Copy Token</button>
   <pre id="log">Ready...</pre>
 
   <script>
     const log = document.getElementById('log');
-    const triggerBtn = document.getElementById('triggerAPI');
     const getTokenBtn = document.getElementById('getToken');
+    const copyTokenBtn = document.getElementById('copyToken');
     const tg = window.Telegram.WebApp;
 
-    tg.ready();
-    tg.expand();
-
-    let capturedTokens = [];
+    let bearerToken = null;
 
     function appendLog(message, type = 'info') {
       const timestamp = new Date().toLocaleTimeString();
-      const className = type === 'success' ? 'success' : type === 'error' ? 'error' : '';
+      const className = type === 'success' ? 'success' : type === 'error' ? 'error' : type === 'info' ? 'info' : '';
       log.innerHTML += `<div class="${className}">[${timestamp}] ${message}</div>`;
       log.scrollTop = log.scrollHeight;
     }
 
-    // INTERCEPT EVERYTHING - including Telegram's internal calls
-    const originalFetch = window.fetch;
-    window.fetch = async function(...args) {
-      const [url, options] = args;
-      
-      appendLog(`📡 Fetch: ${typeof url === 'string' ? url : url.url}`);
-      
-      if (options?.headers) {
-        const headers = options.headers instanceof Headers ? 
-          Object.fromEntries(options.headers.entries()) : options.headers;
-        
-        // Log ALL headers
-        Object.entries(headers).forEach(([key, value]) => {
-          if (key.toLowerCase() === 'authorization') {
-            appendLog(`  🔑 ${key}: ${value}`, 'success');
-            if (value.startsWith('Bearer ')) {
-              const token = value.replace('Bearer ', '');
-              capturedTokens.push({ token, url, timestamp: Date.now() });
-              appendLog('🎯 BEARER TOKEN CAPTURED!', 'success');
-              getTokenBtn.disabled = false;
-            }
-          }
-        });
-      }
-      
-      return originalFetch.apply(this, args);
-    };
+    tg.ready();
+    tg.expand();
 
-    // Intercept XHR
-    const originalXHROpen = XMLHttpRequest.prototype.open;
-    const originalXHRSetHeader = XMLHttpRequest.prototype.setRequestHeader;
-    const originalXHRSend = XMLHttpRequest.prototype.send;
-    
-    XMLHttpRequest.prototype.open = function(method, url) {
-      this._method = method;
-      this._url = url;
-      appendLog(`📡 XHR: ${method} ${url}`);
-      return originalXHROpen.apply(this, arguments);
-    };
-    
-    XMLHttpRequest.prototype.setRequestHeader = function(header, value) {
-      if (header.toLowerCase() === 'authorization') {
-        appendLog(`  🔑 ${header}: ${value}`, 'success');
-        if (value.startsWith('Bearer ')) {
-          const token = value.replace('Bearer ', '');
-          capturedTokens.push({ token, url: this._url, timestamp: Date.now() });
-          appendLog('🎯 BEARER TOKEN CAPTURED!', 'success');
-          getTokenBtn.disabled = false;
-        }
-      }
-      return originalXHRSetHeader.apply(this, arguments);
-    };
-
-    appendLog('✓ Network interception active', 'success');
-    appendLog('Monitoring ALL network traffic...\n');
-
-    // Trigger actual Telegram API calls
-    triggerBtn.onclick = async () => {
-      try {
-        appendLog('=== Triggering Telegram API Calls ===\n');
-        
-        // Method 1: Cloud Storage (makes authenticated API calls)
-        appendLog('1. Testing CloudStorage API...');
-        if (tg.CloudStorage) {
-          tg.CloudStorage.setItem('test_key', 'test_value', (error, success) => {
-            if (error) {
-              appendLog(`CloudStorage error: ${error}`, 'error');
-            } else {
-              appendLog('✓ CloudStorage API called', 'success');
-            }
-          });
-          
-          setTimeout(() => {
-            tg.CloudStorage.getItem('test_key', (error, value) => {
-              if (!error) {
-                appendLog(`✓ CloudStorage retrieved: ${value}`, 'success');
-              }
-            });
-          }, 1000);
-        }
-        
-        // Method 2: Request contact/phone (wallet related)
-        setTimeout(() => {
-          appendLog('\n2. Requesting contact access...');
-          tg.requestContact((granted) => {
-            if (granted) {
-              appendLog('✓ Contact access granted', 'success');
-            }
-          });
-        }, 2000);
-        
-        // Method 3: BiometricManager (triggers auth APIs)
-        setTimeout(() => {
-          appendLog('\n3. Testing BiometricManager...');
-          if (tg.BiometricManager) {
-            tg.BiometricManager.init(() => {
-              appendLog('✓ BiometricManager initialized', 'success');
-            });
-          }
-        }, 3000);
-        
-        // Method 4: Request write access + sendData (definitely makes API call)
-        setTimeout(() => {
-          appendLog('\n4. Sending data to bot...');
-          tg.sendData(JSON.stringify({
-            action: 'get_wallet_info',
-            user_id: tg.initDataUnsafe.user?.id
-          }));
-          appendLog('✓ Data sent to bot', 'success');
-        }, 4000);
-
-        appendLog('\n⏳ Waiting for API responses...');
-        appendLog('Any Bearer tokens will appear above\n');
-
-      } catch (e) {
-        appendLog(`Error: ${e.message}`, 'error');
-      }
-    };
-
-    // Display captured tokens
+    // Get Bearer token from Telegram's undocumented endpoint
     getTokenBtn.onclick = async () => {
       try {
-        if (capturedTokens.length === 0) {
-          appendLog('⚠️ No tokens captured yet!', 'error');
-          appendLog('\nThe Wallet API might be using a different auth method');
-          appendLog('or running in an isolated context.');
+        appendLog('Extracting initData...', 'info');
+        
+        const initData = tg.initData;
+        if (!initData) {
+          appendLog('✗ No initData available!', 'error');
+          tg.showAlert('Error: Please open through Telegram bot');
           return;
         }
 
-        appendLog('\n═══════════════════════════════', 'success');
-        appendLog(`✓ ${capturedTokens.length} TOKEN(S) CAPTURED!`, 'success');
-        appendLog('═══════════════════════════════\n', 'success');
+        appendLog(`✓ InitData obtained (length: ${initData.length})`, 'success');
+        appendLog('\nUser Info:', 'info');
+        appendLog(`  Name: ${tg.initDataUnsafe.user?.first_name}`);
+        appendLog(`  ID: ${tg.initDataUnsafe.user?.id}`);
+        appendLog(`  Username: @${tg.initDataUnsafe.user?.username || 'N/A'}`);
+
+        appendLog('\n🔄 Exchanging initData for Bearer token...', 'info');
         
-        capturedTokens.forEach((capture, i) => {
-          appendLog(`\nToken #${i + 1}:`);
-          appendLog(`URL: ${capture.url}`);
-          appendLog(`Time: ${new Date(capture.timestamp).toLocaleTimeString()}`);
-          appendLog(`Token: ${capture.token}\n`);
-          
-          // Try JWT decode
+        // Try multiple possible endpoints
+        const endpoints = [
+          'https://wallet.tg/wallet-api/auth/tonconnect',
+          'https://wallet.telegram.org/wallet-api/auth/tonconnect',
+          'https://wallet-api.telegram.org/auth/tonconnect',
+          'https://api.wallet.tg/auth/tonconnect',
+          'https://tonconnect.wallet.tg/auth'
+        ];
+
+        let success = false;
+        
+        for (const endpoint of endpoints) {
           try {
-            const parts = capture.token.split('.');
+            appendLog(`\nTrying: ${endpoint}`, 'info');
+            
+            const response = await fetch(endpoint, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+              },
+              body: JSON.stringify({
+                initData: initData,
+                initDataRaw: initData
+              })
+            });
+
+            appendLog(`Response status: ${response.status}`);
+            
+            if (response.ok) {
+              const data = await response.json();
+              appendLog(`Response: ${JSON.stringify(data, null, 2)}`, 'success');
+              
+              if (data.token || data.bearer_token || data.access_token) {
+                bearerToken = data.token || data.bearer_token || data.access_token;
+                success = true;
+                break;
+              }
+            } else {
+              const errorText = await response.text();
+              appendLog(`Error: ${errorText}`, 'error');
+            }
+            
+          } catch (e) {
+            appendLog(`Failed: ${e.message}`, 'error');
+          }
+        }
+
+        if (success) {
+          appendLog('\n═══════════════════════════════', 'success');
+          appendLog('✓ BEARER TOKEN EXTRACTED!', 'success');
+          appendLog('═══════════════════════════════\n', 'success');
+          appendLog(`Token: ${bearerToken}\n`);
+          
+          // Try to decode JWT
+          try {
+            const parts = bearerToken.split('.');
             if (parts.length === 3) {
               const payload = JSON.parse(atob(parts[1]));
               appendLog('JWT Payload:');
               appendLog(JSON.stringify(payload, null, 2));
+              
+              if (payload.exp) {
+                const expiryDate = new Date(payload.exp * 1000);
+                appendLog(`\nExpires: ${expiryDate.toLocaleString()}`);
+              }
             }
           } catch (e) {
-            appendLog('(Non-JWT token)');
+            appendLog('(Non-JWT token or decode error)');
           }
-        });
 
-        const latestToken = capturedTokens[capturedTokens.length - 1].token;
-        await navigator.clipboard.writeText(latestToken);
-        tg.showAlert('✓ Latest token copied!');
-        appendLog('\n✓ Copied to clipboard!', 'success');
+          copyTokenBtn.disabled = false;
+          tg.showAlert('✓ Bearer token extracted successfully!');
+          
+        } else {
+          appendLog('\n✗ Could not extract Bearer token', 'error');
+          appendLog('\nAlternative: Try these manual steps:', 'info');
+          appendLog('1. Open Chrome DevTools (F12)');
+          appendLog('2. Go to Network tab');
+          appendLog('3. Open @wallet bot');
+          appendLog('4. Perform any action');
+          appendLog('5. Look for requests with Authorization header');
+          appendLog('\nOr use the initData directly:', 'info');
+          appendLog(initData);
+          
+          // Copy initData as fallback
+          await navigator.clipboard.writeText(initData);
+          appendLog('\n✓ InitData copied to clipboard as fallback', 'success');
+        }
 
       } catch (e) {
-        appendLog(`Error: ${e.message}`, 'error');
+        appendLog(`\n✗ Error: ${e.message}`, 'error');
+        appendLog(`Stack: ${e.stack}`);
       }
     };
 
-    // Auto-log Telegram WebApp info
-    appendLog('Telegram WebApp Info:');
-    appendLog(`Version: ${tg.version}`);
-    appendLog(`Platform: ${tg.platform}`);
-    appendLog(`User ID: ${tg.initDataUnsafe.user?.id}`);
-    appendLog(`\nClick "Trigger Wallet API Call" to start\n`);
-    
+    // Copy token to clipboard
+    copyTokenBtn.onclick = async () => {
+      try {
+        if (!bearerToken) {
+          appendLog('✗ No token to copy!', 'error');
+          return;
+        }
+
+        await navigator.clipboard.writeText(bearerToken);
+        tg.showAlert('✓ Bearer token copied to clipboard!');
+        appendLog('\n✓ Token copied to clipboard!', 'success');
+        
+        appendLog('\n📝 Usage Example:', 'info');
+        appendLog('curl -H "Authorization: Bearer ' + bearerToken.substring(0, 30) + '..." \\');
+        appendLog('  https://wallet.tg/api/v1/balance');
+
+      } catch (e) {
+        appendLog(`✗ Copy error: ${e.message}`, 'error');
+      }
+    };
+
+    appendLog('Ready! Click "Get Bearer Token" to start.');
+    appendLog('\nThis will attempt to exchange your initData');
+    appendLog('for a Wallet API Bearer token using Telegram\'s');
+    appendLog('undocumented endpoint.\n');
   </script>
 </body>
 </html>

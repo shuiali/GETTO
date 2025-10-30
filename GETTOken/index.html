@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wallet Connect</title>
+  <script src="https://unpkg.com/@tonconnect/sdk@3/dist/tonconnect-sdk.min.js"></script>
+  <style>body{font-family:Arial;text-align:center;padding:2rem;}</style>
+</head>
+<body>
+  <h2>Connect TON Wallet</h2>
+  <button id="connect">Connect</button>
+  <pre id="log"></pre>
+
+  <script>
+    const log = document.getElementById('log');
+    const button = document.getElementById('connect');
+
+    const connector = new TonConnect({
+      manifestUrl: 'https://yourdomain.com/tonconnect-manifest.json'
+    });
+
+    button.onclick = async () => {
+      try {
+        await connector.connectWallet(); // Opens Telegram Wallet (no KYC needed)
+        log.textContent = 'Connected! Getting token...\n';
+
+        // Wait for wallet to send proof
+        const session = await new Promise(resolve => {
+          connector.on('session_link_ready', (link) => {
+            const params = new URLSearchParams(link.split('?')[1]);
+            const auth = params.get('tgWebAppData'); // This is the WRITE token!
+            resolve(auth);
+          });
+        });
+
+        log.textContent += `\nWRITE TOKEN:\n${session}\n\nUse in API: Bearer ${session}`;
+        navigator.clipboard.writeText(session);
+        alert('Token copied to clipboard!');
+      } catch (e) {
+        log.textContent = 'Error: ' + e.message;
+      }
+    };
+  </script>
+</body>
+</html>

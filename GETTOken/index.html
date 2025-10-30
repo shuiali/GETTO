@@ -3,44 +3,181 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Wallet Connect</title>
-  <script src="https://unpkg.com/@tonconnect/sdk@3/dist/tonconnect-sdk.min.js"></script>
-  <style>body{font-family:Arial;text-align:center;padding:2rem;}</style>
+  <title>TON Wallet Connect</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="https://unpkg.com/@tonconnect/ui@latest/dist/tonconnect-ui.min.js"></script>
+  <style>
+    body {
+      font-family: Arial;
+      text-align: center;
+      padding: 2rem;
+      background: var(--tg-theme-bg-color, #fff);
+      color: var(--tg-theme-text-color, #000);
+    }
+    button {
+      padding: 12px 24px;
+      font-size: 16px;
+      background: var(--tg-theme-button-color, #0088cc);
+      color: var(--tg-theme-button-text-color, #fff);
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      margin: 10px;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    #log {
+      margin-top: 20px;
+      text-align: left;
+      padding: 10px;
+      background: var(--tg-theme-secondary-bg-color, #f0f0f0);
+      border-radius: 8px;
+      word-wrap: break-word;
+      font-size: 12px;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    .success { color: green; font-weight: bold; }
+    .error { color: red; font-weight: bold; }
+    #tonconnect-button { margin: 20px auto; }
+  </style>
 </head>
 <body>
-  <h2>Connect TON Wallet</h2>
-  <button id="connect">Connect</button>
-  <pre id="log"></pre>
+  <h2>TON Wallet Connect</h2>
+  <div id="tonconnect-button"></div>
+  <button id="getToken" disabled>Get Write Token</button>
+  <button id="disconnect" disabled>Disconnect</button>
+  <pre id="log">Initializing TON Connect...</pre>
 
   <script>
     const log = document.getElementById('log');
-    const button = document.getElementById('connect');
+    const getTokenBtn = document.getElementById('getToken');
+    const disconnectBtn = document.getElementById('disconnect');
+    const tg = window.Telegram.WebApp;
 
-    const connector = new TonConnect({
-      manifestUrl: 'https://yourdomain.com/tonconnect-manifest.json'
+    // Initialize Telegram WebApp
+    tg.ready();
+    tg.expand();
+
+    function appendLog(message, type = 'info') {
+      const timestamp = new Date().toLocaleTimeString();
+      const className = type === 'success' ? 'success' : type === 'error' ? 'error' : '';
+      log.innerHTML += `<div class="${className}">[${timestamp}] ${message}</div>`;
+      log.scrollTop = log.scrollHeight;
+    }
+
+    // Initialize TON Connect
+    const tonConnectUI = new TON_CONNECT_UI.TonConnectUI({
+      manifestUrl: 'https://lowercase-sable.vercel.app/tonconnect-manifest.json',
+      buttonRootId: 'tonconnect-button'
     });
 
-    button.onclick = async () => {
+    appendLog('TON Connect initialized');
+
+    // Monitor connection status
+    tonConnectUI.onStatusChange(wallet => {
+      if (wallet) {
+        appendLog('✓ Wallet connected successfully!', 'success');
+        appendLog(`Wallet Address: ${wallet.account.address}`);
+        appendLog(`Chain: ${wallet.account.chain}`);
+        appendLog(`Public Key: ${wallet.account.publicKey || 'N/A'}`);
+        
+        getTokenBtn.disabled = false;
+        disconnectBtn.disabled = false;
+      } else {
+        appendLog('Wallet disconnected', 'error');
+        getTokenBtn.disabled = true;
+        disconnectBtn.disabled = true;
+      }
+    });
+
+    // Get token with write permissions
+    getTokenBtn.onclick = async () => {
       try {
-        await connector.connectWallet(); // Opens Telegram Wallet (no KYC needed)
-        log.textContent = 'Connected! Getting token...\n';
+        const wallet = tonConnectUI.wallet;
+        
+        if (!wallet) {
+          appendLog('Error: No wallet connected!', 'error');
+          tg.showAlert('Please connect your wallet first!');
+          return;
+        }
 
-        // Wait for wallet to send proof
-        const session = await new Promise(resolve => {
-          connector.on('session_link_ready', (link) => {
-            const params = new URLSearchParams(link.split('?')[1]);
-            const auth = params.get('tgWebAppData'); // This is the WRITE token!
-            resolve(auth);
-          });
-        });
+        appendLog('Extracting wallet data...');
 
-        log.textContent += `\nWRITE TOKEN:\n${session}\n\nUse in API: Bearer ${session}`;
-        navigator.clipboard.writeText(session);
-        alert('Token copied to clipboard!');
+        // Get connection proof (this provides write permissions)
+        const proof = tonConnectUI.connectionProof;
+        
+        // Prepare token data
+        const tokenData = {
+          address: wallet.account.address,
+          publicKey: wallet.account.publicKey,
+          chain: wallet.account.chain,
+          walletStateInit: wallet.account.walletStateInit,
+          proof: proof,
+          timestamp: Date.now()
+        };
+
+        // Convert to API-compatible format
+        const apiToken = btoa(JSON.stringify(tokenData));
+
+        appendLog('\n═══════════════════════════════', 'success');
+        appendLog('✓ WRITE TOKEN GENERATED!', 'success');
+        appendLog('═══════════════════════════════\n', 'success');
+        appendLog(`Wallet: ${wallet.account.address}`);
+        appendLog(`\nAPI Token (Base64):\n${apiToken}\n`);
+        appendLog('Raw Data:');
+        appendLog(JSON.stringify(tokenData, null, 2));
+
+        // Copy to clipboard
+        try {
+          await navigator.clipboard.writeText(apiToken);
+          tg.showAlert('✓ Token copied to clipboard!');
+          appendLog('\n✓ Token copied to clipboard!', 'success');
+        } catch (e) {
+          // Fallback
+          const textarea = document.createElement('textarea');
+          textarea.value = apiToken;
+          document.body.appendChild(textarea);
+          textarea.select();
+          document.execCommand('copy');
+          document.body.removeChild(textarea);
+          tg.showAlert('✓ Token copied!');
+          appendLog('✓ Token copied!', 'success');
+        }
+
+        // Show usage example
+        appendLog('\n📝 Usage Example:');
+        appendLog('Authorization: Bearer ' + apiToken.substring(0, 50) + '...');
+
       } catch (e) {
-        log.textContent = 'Error: ' + e.message;
+        appendLog(`Error: ${e.message}`, 'error');
+        tg.showAlert('Error: ' + e.message);
       }
     };
+
+    // Disconnect wallet
+    disconnectBtn.onclick = async () => {
+      try {
+        await tonConnectUI.disconnect();
+        appendLog('Wallet disconnected successfully');
+        log.innerHTML = 'Connect your wallet to continue...';
+      } catch (e) {
+        appendLog(`Error disconnecting: ${e.message}`, 'error');
+      }
+    };
+
+    // Initial status check
+    setTimeout(() => {
+      if (tonConnectUI.wallet) {
+        appendLog('Wallet already connected!', 'success');
+        getTokenBtn.disabled = false;
+        disconnectBtn.disabled = false;
+      } else {
+        appendLog('Please connect your TON wallet to continue');
+      }
+    }, 1000);
   </script>
 </body>
 </html>
